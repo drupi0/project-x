@@ -1,0 +1,75 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        APP_ORIGIN: "http://127.0.0.1:${APP_PORT:-3000}"
+    init: true
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      BODY_SIZE_LIMIT: "2M"
+      STT_PROVIDER: "${STT_PROVIDER:-whisper}"
+      WHISPER_BASE_URL: "${DOCKER_WHISPER_BASE_URL:-http://whisper:8080}"
+      STT_ALLOW_DOCKER: "1"
+      STT_TIMEOUT_MS: "${STT_TIMEOUT_MS:-120000}"
+      AI_PROVIDER: "${AI_PROVIDER:-ollama}"
+      AI_TIMEOUT_MS: "${AI_TIMEOUT_MS:-120000}"
+      AI_DEBUG: "${AI_DEBUG:-0}"
+      CLAUDE_TOKEN: "${CLAUDE_TOKEN:-}"
+      CLAUDE_MODEL: "${CLAUDE_MODEL:-claude-haiku-4-5-20251001}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3:4b}"
+      # Ollama runs on the host; Docker Desktop resolves this host alias.
+      OLLAMA_BASE_URL: "${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      OLLAMA_ALLOW_DOCKER: "1"
+    depends_on:
+      whisper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "--input-type=module", "-e", "const r = await fetch('http://127.0.0.1:3000'); process.exit(r.ok ? 0 : 1)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  whisper-model:
+    image: refugee-poc-whisper:local
+    build: ./docker/whisper
+    environment:
+      WHISPER_MODEL: "${WHISPER_MODEL:-tiny}"
+    volumes:
+      - whisper-models:/models
+    command: ["sh", "/usr/local/bin/download-model"]
+
+  whisper:
+    image: refugee-poc-whisper:local
+    build: ./docker/whisper
+    depends_on:
+      whisper-model:
+        condition: service_completed_successfully
+    environment:
+      WHISPER_MODEL: "${WHISPER_MODEL:-tiny}"
+    volumes:
+      - whisper-models:/models:ro
+    read_only: true
+    tmpfs: [/tmp]
+    command: ["sh", "-c", "exec whisper-server --host 0.0.0.0 --port 8080 --model /models/ggml-$${WHISPER_MODEL}.bin --language auto --no-gpu"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    # The upstream server's stdout/stderr is deliberately not retained.
+    logging:
+      driver: none
+
+volumes:
+  whisper-models:

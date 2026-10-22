@@ -1,0 +1,17 @@
+node_modules/
+.svelte-kit/
+build/
+.env
+.env.*
+!.env.example
+.DS_Store
+coverage/
+.vite/
+*.log
+# Interview audio can contain sensitive personal information.
+recordings/
+uploads/
+*.wav
+*.mp3
+*.m4a
+*.webm

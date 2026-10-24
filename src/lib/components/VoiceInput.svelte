@@ -2,8 +2,11 @@
   import { onDestroy } from 'svelte';
   import { recordingToWav } from '#lib/audio/wav.ts';
   import { MAX_AUDIO_SECONDS } from '#lib/types/speech.ts';
-  let { disabled, ontranscript, onbusy }: {
+  import type { Transcription } from '#lib/types/speech.ts';
+  import { vocabularyHeaders } from '#lib/speech-output/vocabulary.ts';
+  let { disabled, ontranscript, onbusy, vocabulary = [], onrawtranscript }: {
     disabled: boolean; ontranscript: (text: string) => void; onbusy: (busy: boolean) => void;
+    vocabulary?: string[]; onrawtranscript?: (value: Transcription) => void;
   } = $props();
   let phase = $state<'idle' | 'permission' | 'recording' | 'transcribing'>('idle');
   let seconds = $state(0);
@@ -67,13 +70,13 @@
           chunks.length = 0;
           if (current !== generation) return;
           const response = await fetch('/api/transcribe', {
-            method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav,
+            method: 'POST', headers: { 'Content-Type': 'audio/wav', ...vocabularyHeaders(vocabulary) }, body: wav,
             signal: requestController.signal, cache: 'no-store'
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || 'Transcription failed. Please try again.');
           if (typeof result.text !== 'string' || !result.text.trim()) throw new Error('No words were recognized. Please record again.');
-          if (current === generation) { ontranscript(result.text); note = 'Review and correct the transcript below, then press Send.'; }
+          if (current === generation) { onrawtranscript?.(result); ontranscript(result.text); note = 'Review and correct the transcript below, then press Send.'; }
         } catch (cause) {
           if (current === generation) error = cause instanceof Error && cause.name !== 'AbortError'
             ? cause.message : 'Transcription timed out. Please record a shorter message.';

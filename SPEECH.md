@@ -44,7 +44,7 @@ The pinned v1.8.3 server disables prior-audio context by default; it does not ac
 
 The browser records with MediaRecorder and converts audio in memory to mono 16 kHz PCM16 WAV. `POST /api/transcribe` accepts the raw `audio/wav` body and returns `{ "text": "recognized words" }` or a safe `{ "error": "..." }` response.
 
-`src/lib/server/speech/provider.ts` defines `SpeechToTextProvider.transcribe({ audio, signal })`. The endpoint validates audio and calls that interface. `whisper.ts` implements the whisper.cpp multipart `/inference` protocol; `index.ts` selects the implementation from private environment settings.
+`src/lib/server/speech/provider.ts` defines `SpeechToTextProvider.transcribe({ audio, signal, vocabulary? })`. The endpoint validates audio and an optional URI-encoded JSON vocabulary header. `whisper.ts` sends session vocabulary through the pinned server's multipart `prompt` field, explicitly clearing it on requests without hints. The response includes trimmed `text` and unchanged `rawText`; the browser keeps original transcripts separate from edits and interpreted facts. This adapter reports no confidence score. `index.ts` selects the implementation from private environment settings.
 
 To replace Whisper, implement this interface, register it in the factory, and change deployment/configuration. Keep the WAV-in/text-out contract. No provider-specific changes are needed in the recorder, review UI, chat interface, or interview prompt. Speech output has its own `SpeechOutputProvider` interface in `src/lib/speech-output/provider.ts`; its browser implementation selects voices with `localService === true`. A future speech output provider can implement the same client-side contract.
 

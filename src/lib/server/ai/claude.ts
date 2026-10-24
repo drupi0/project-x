@@ -1,5 +1,5 @@
 import { AIError, type AIProvider } from './provider';
-import { MAX_MESSAGE_LENGTH } from '../../types/chat';
+import { MAX_MODEL_OUTPUT_LENGTH } from '../../types/chat';
 import { finalReply } from './final-reply';
 import { CLAUDE_INTERVIEW_OUTPUT_SCHEMA } from '../../interview/output-schema';
 import { redactRawModelOutput } from './redact-debug-output';
@@ -34,7 +34,7 @@ export class ClaudeProvider implements AIProvider {
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         body: JSON.stringify({
           model: this.config.model,
-          max_tokens: 2048,
+          max_tokens: 4096,
           stream: false,
           output_config: {
             format: { type: 'json_schema', schema: CLAUDE_INTERVIEW_OUTPUT_SCHEMA }
@@ -99,7 +99,7 @@ export class ClaudeProvider implements AIProvider {
       }
       log('content_extracted', undefined, { contentType: 'text', textLength: text.length });
       const content = finalReply(text);
-      if (content.length > MAX_MESSAGE_LENGTH) {
+      if (content.length > MAX_MODEL_OUTPUT_LENGTH) {
         throw new AIError('Claude returned an oversized reply. Please retry.', 502);
       }
       log('request_completed');

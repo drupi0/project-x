@@ -1,14 +1,16 @@
 <script lang="ts">
   import { MAX_MESSAGE_LENGTH } from '#lib/types/chat.ts';
   import VoiceInput from './VoiceInput.svelte';
+  import type { Transcription } from '#lib/types/speech.ts';
   let voiceBusy = $state(false);
-  let { value = $bindable(''), disabled, onsend }: {
+  let { value = $bindable(''), disabled, onsend, vocabulary = [], onrawtranscript }: {
     value: string; disabled: boolean; onsend: () => void;
+    vocabulary?: string[]; onrawtranscript?: (value: Transcription) => void;
   } = $props();
 </script>
 
 <form onsubmit={(event) => { event.preventDefault(); if (!voiceBusy) onsend(); }}>
-  <VoiceInput {disabled} onbusy={(busy) => voiceBusy = busy} ontranscript={(text) => {
+  <VoiceInput {disabled} {vocabulary} {onrawtranscript} onbusy={(busy) => voiceBusy = busy} ontranscript={(text) => {
     const combined = value.trim() ? `${value.trim()}\n${text}` : text;
     if (combined.length > MAX_MESSAGE_LENGTH) throw new Error('This transcript plus your draft is too long. Shorten the draft and record again.');
     value = combined;

@@ -2,9 +2,11 @@
   import { onDestroy } from 'svelte';
   import { recordingToWav } from '#lib/audio/wav.ts';
   import { MAX_AUDIO_SECONDS } from '#lib/types/speech.ts';
+  import type { Transcription } from '#lib/types/speech.ts';
+  import { vocabularyHeaders } from '#lib/speech-output/vocabulary.ts';
 
-  let { active = $bindable(false), disabled = false, ontranscript, onwelcome, oninterrupt, onretry }: {
-    active: boolean; disabled?: boolean; ontranscript: (text: string, onSpeaking: () => void) => Promise<boolean>;
+  let { active = $bindable(false), disabled = false, vocabulary = [], ontranscript, onwelcome, oninterrupt, onretry }: {
+    active: boolean; disabled?: boolean; vocabulary?: string[]; ontranscript: (text: string, onSpeaking: () => void, transcription?: Transcription) => Promise<boolean>;
     onwelcome: () => Promise<boolean>; oninterrupt: () => void; onretry: (onSpeaking: () => void) => Promise<boolean>;
   } = $props();
 
@@ -58,14 +60,15 @@
       const wav = await recordingToWav(new Blob(turn, { type: capture.mimeType }));
       if (current !== generation) return;
       const response = await fetch('/api/transcribe', {
-        method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav,
+        method: 'POST', headers: { 'Content-Type': 'audio/wav', ...vocabularyHeaders(vocabulary) }, body: wav,
         signal: request.signal, cache: 'no-store'
       });
       const result = await response.json();
+      if (current !== generation || !active) return;
       if (!response.ok) throw new Error(result.error || 'Transcription failed.');
       if (typeof result.text !== 'string' || !result.text.trim()) throw new Error('I didn’t catch that. Please say it again.');
       phase = 'thinking';
-      const replied = await ontranscript(result.text.trim(), () => { phase = 'speaking'; });
+      const replied = await ontranscript(result.text.trim(), () => { phase = 'speaking'; }, result);
       if (!replied) { if (current === generation && active) phase = 'paused'; return; }
       if (current === generation && active) beginListening(current);
     } catch (cause) {

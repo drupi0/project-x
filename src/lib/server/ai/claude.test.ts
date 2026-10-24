@@ -34,7 +34,7 @@ describe('Claude provider', () => {
     });
     expect(options?.redirect).toBe('error');
     expect(JSON.parse(options!.body as string)).toEqual({
-      model: 'custom-claude-model', stream: false, max_tokens: 2048,
+      model: 'custom-claude-model', stream: false, max_tokens: 4096,
       output_config: { format: { type: 'json_schema', schema: CLAUDE_INTERVIEW_OUTPUT_SCHEMA } },
       system: input.systemPrompt, messages: input.messages
     });
@@ -69,7 +69,7 @@ describe('Claude provider', () => {
     { ...success, role: 'user' },
     { ...success, content: [] },
     { ...success, content: [{ type: 'thinking', thinking: 'private' }] },
-    { ...success, content: [{ type: 'text', text: 'x'.repeat(4001) }] }
+    { ...success, content: [{ type: 'text', text: 'x'.repeat(24001) }] }
   ])('rejects incomplete or invalid output', async (body) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(body));
     await expect(createProvider({ CLAUDE_TOKEN: 'test' }, fetcher).chat(input)).rejects.toMatchObject({ status: 502 });

@@ -50,6 +50,15 @@ describe('validation and history', () => {
     expect(validateChatRequest({ messages })).toEqual({ messages, intake: INITIAL_INTAKE });
     expect(() => validateChatRequest({ messages, intake: { ...INITIAL_INTAKE, categories: { ...INITIAL_INTAKE.categories, identity_location: 'bogus' } } })).toThrow();
   });
+  it('accepts returned computed state but recomputes it instead of trusting client values', () => {
+    const staleClientState = {
+      ...INITIAL_INTAKE,
+      stage: 'ended',
+      informationAdequate: true,
+      readyForSummary: true
+    };
+    expect(validateChatRequest({ messages, intake: staleClientState }).intake).toEqual(INITIAL_INTAKE);
+  });
 });
 
 describe('provider abstraction and Ollama', () => {
@@ -314,11 +323,21 @@ describe('provider abstraction and Ollama', () => {
 });
 
 describe('chat HTTP handler', () => {
+  it('accepts the server-returned interview state on the next turn', async () => {
+    const chat = vi.fn().mockResolvedValue(interviewReply);
+    const first = await handleChat(request({ messages }), () => ({ chat }));
+    const firstResult = await first.json();
+    const nextMessages = [...messages, firstResult.message, { role: 'user', content: 'I am in Cairo.' }];
+    const second = await handleChat(request({ messages: nextMessages, intake: firstResult.intake }), () => ({ chat }));
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ message: reply, intake: INITIAL_INTAKE });
+    expect(chat).toHaveBeenCalledTimes(2);
+  });
   it('works with an alternate provider, preserves context and adds the central prompt', async () => {
     const chat = vi.fn().mockResolvedValue(interviewReply);
     const history = [...messages, reply, { role: 'user', content: 'I want to correct that.' }];
     const response = await handleChat(request({ messages: history }), () => ({ chat }));
-    expect(await response.json()).toEqual({ message: reply, intake: INITIAL_INTAKE });
+    expect(await response.json()).toMatchObject({ message: reply, intake: INITIAL_INTAKE });
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(chat).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: promptForIntake(INITIAL_INTAKE), messages: history }));
   });

@@ -1,3 +1,5 @@
+import { validateQuestion, validateUpdates, type InterviewQuestion, type MemoryUpdate } from './memory-types';
+
 export const PROFILE_FIELDS = [
   'preferredName', 'legalName', 'countryOfOrigin', 'currentCountry', 'existingCase',
   'organizationOrRepresentative', 'caseReference', 'caseStatus', 'safeContactMethod'
@@ -81,9 +83,13 @@ function caseDetailsAreRelevant(profile: Record<ProfileField, ProfileAnswer>): b
     ['yes', 'pending'].includes((profile.existingCase.value ?? '').toLowerCase());
 }
 
-function assertExactKeys(value: Record<string, unknown>, fields: readonly string[], prefix: string): void {
+function assertExactKeys(
+  value: Record<string, unknown>, fields: readonly string[], prefix: string, allowedExtras: readonly string[] = []
+): void {
   for (const key of Object.keys(value)) {
-    if (!fields.includes(key)) throw new IntakeValidationError(`${prefix}.${key}:unexpected`);
+    if (!fields.includes(key) && !allowedExtras.includes(key)) {
+      throw new IntakeValidationError(`${prefix}.${key}:unexpected`);
+    }
   }
   for (const field of fields) {
     if (!Object.hasOwn(value, field)) throw new IntakeValidationError(`${prefix}.${field}:missing`);
@@ -137,13 +143,14 @@ function validateStatusRecord<T extends string>(
   return result;
 }
 
-export function validateIntakeState(value: unknown): IntakeState {
+export function validateIntakeState(value: unknown, options: { allowComputedFields?: boolean } = {}): IntakeState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new IntakeValidationError('intake');
   const candidate = value as Record<string, unknown>;
+  const computedFields = options.allowComputedFields ? ['stage', 'informationAdequate', 'readyForSummary'] : [];
   assertExactKeys(candidate, [
     'profile', 'categories', 'details', 'urgentSafetyConcern', 'skipIntake',
     'finishRequested', 'pauseRequested', 'summaryStatus'
-  ], 'intake');
+  ], 'intake', computedFields);
   const profileRaw = candidate.profile;
   if (!profileRaw || typeof profileRaw !== 'object' || Array.isArray(profileRaw)) {
     throw new IntakeValidationError('intake.profile');
@@ -277,8 +284,8 @@ export function enforceNameDisclosure(turn: { reply: string; intake: IntakeState
 
 export class InterviewOutputError extends Error {
   constructor(
-    public kind: 'multiple_questions' | 'malformed_output',
-    public stage: 'json_parse' | 'root_schema' | 'reply_schema' | 'question_count' | 'intake_schema',
+    public kind: 'multiple_questions' | 'malformed_output' | 'repeated_question',
+    public stage: 'json_parse' | 'root_schema' | 'reply_schema' | 'question_count' | 'intake_schema' | 'conversation',
     public field?: string,
     public diagnostics?: {
       contentLength: number;
@@ -365,14 +372,14 @@ function parseJsonResponse(content: string): unknown {
 export function parseInterviewTurn(
   content: string,
   onStage?: (stage: 'json_parse_succeeded' | 'schema_validation_succeeded') => void
-): { reply: string; intake: IntakeState } {
+): { reply: string; intake: IntakeState; updates?: MemoryUpdate[]; question?: InterviewQuestion | null } {
   const parsed = parseJsonResponse(content);
   onStage?.('json_parse_succeeded');
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new InterviewOutputError('malformed_output', 'root_schema', '$');
   }
   const value = parsed as Record<string, unknown>;
-  try { assertExactKeys(value, ['reply', 'intake'], 'response'); }
+  try { assertExactKeys(value, ['reply', 'intake'], 'response', ['updates', 'question']); }
   catch (error) {
     throw new InterviewOutputError('malformed_output', 'root_schema',
       error instanceof IntakeValidationError ? error.field : '$');
@@ -384,9 +391,32 @@ export function parseInterviewTurn(
     throw new InterviewOutputError('multiple_questions', 'question_count', 'reply');
   }
   try {
-    const intake = validateIntakeState(value.intake);
+    let rawIntake = value.intake;
+    if (rawIntake && typeof rawIntake === 'object' && !Array.isArray(rawIntake) && !('profile' in rawIntake)) {
+      // Compact delta responses use the same strictly validated control flags.
+      // Missing profile is permitted only for this complete alternate shape.
+      assertExactKeys(rawIntake as Record<string, unknown>, [
+        'urgentSafetyConcern', 'skipIntake', 'finishRequested', 'pauseRequested', 'summaryStatus'
+      ], 'intake');
+      if (!('updates' in value) || !('question' in value)) throw new IntakeValidationError('updates:missing');
+      rawIntake = { profile: INITIAL_INTAKE.profile, categories: INITIAL_INTAKE.categories,
+        details: INITIAL_INTAKE.details, ...rawIntake };
+    }
+    const intake = validateIntakeState(rawIntake);
     onStage?.('schema_validation_succeeded');
-    return { reply: value.reply.trim(), intake };
+    const extension: { updates?: MemoryUpdate[]; question?: InterviewQuestion | null } = {};
+    if ('updates' in value) {
+      try { extension.updates = validateUpdates(value.updates); }
+      catch { throw new IntakeValidationError('updates'); }
+    }
+    if ('question' in value) {
+      try { extension.question = validateQuestion(value.question); }
+      catch { throw new IntakeValidationError('question'); }
+    }
+    if ('question' in value && /[?؟？]/u.test(value.reply) && !extension.question) {
+      throw new IntakeValidationError('question:missing');
+    }
+    return { reply: value.reply.trim(), intake, ...extension };
   }
   catch (error) {
     throw new InterviewOutputError('malformed_output', 'intake_schema',

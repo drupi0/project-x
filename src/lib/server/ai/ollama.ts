@@ -1,5 +1,5 @@
 import { AIError, type AIProvider } from './provider';
-import { MAX_MESSAGE_LENGTH } from '../../types/chat';
+import { MAX_MODEL_OUTPUT_LENGTH } from '../../types/chat';
 import { finalReply } from './final-reply';
 
 export class OllamaProvider implements AIProvider {
@@ -60,7 +60,7 @@ export class OllamaProvider implements AIProvider {
         throw new AIError('The model returned an invalid response. Please retry.', 502);
       }
       const answer = finalReply(content);
-      if (answer.length > MAX_MESSAGE_LENGTH) {
+      if (answer.length > MAX_MODEL_OUTPUT_LENGTH) {
         throw new AIError('The model returned an invalid response. Please retry.', 502);
       }
       return { role: 'assistant' as const, content: answer };

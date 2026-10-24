@@ -172,11 +172,11 @@ src/
     api/chat/+server.ts          POST /api/chat endpoint
 ```
 
-The UI owns chronological history in component memory. The endpoint is stateless and prepends the system prompt on every request. The recent context window has at most 21 messages and 16,000 UTF-16 characters, preserving complete recent turns. Individual messages are limited to 4,000 characters and request bodies to 100,000 bytes. Oversized API input is rejected; the UI trims old context before sending and tells the user when it has done so. Older messages remain visible until reset but may no longer be known to the model.
+The UI owns chronological history, intake state, and bounded factual memory in component memory. The stateless endpoint validates and merges updates on each turn. Recent context has at most 21 messages and 16,000 UTF-16 characters; earlier collected facts, refusals, corrections, and clarification counts travel separately in `memory`. Individual messages are limited to 4,000 characters and request bodies to 100,000 bytes. Older wording remains visible until reset but may be outside the model context. See [conversation reliability and the Samir simulation](CONVERSATION-RELIABILITY.md).
 
 Requests are serialized in the UI. Failed messages can be retried without appending them twice. Restart/end aborts the browser request and invalidates any late response. Provider calls receive cancellation signals and have an independent deadline; immediate cessation of model computation on disconnect depends on the server/runtime.
 
-To add a provider later, implement `AIProvider.chat` and register it in the factory. The UI and interview prompt do not depend on Ollama. Text messages also provide a boundary for future speech transcription and synthesis, neither of which is implemented here.
+To add a provider later, implement `AIProvider.chat` and register it in the factory. The UI and interview prompt do not depend on Ollama. Speech transcription and local synthesis use their own provider interfaces.
 
 ### API
 
@@ -193,6 +193,8 @@ Successful response:
 ```
 
 Send alternating `user` and `assistant` messages, starting and ending with `user`. Never send a `system` role. Errors return `{"error":"..."}` with an appropriate 4xx/5xx status. Foreign browser origins are rejected. Responses use `Cache-Control: no-store`. The model's raw error bodies and internal addresses are never returned.
+
+Successful responses also include `intake` and `memory`. Send both back with the next turn so the session retains answers beyond the recent-message window. The server recomputes derived completion fields and does not trust a client-provided stage.
 
 ## Checks
 
@@ -211,7 +213,7 @@ The test suite uses injected fetch implementations and a fake provider: it does 
 - In Ollama mode, prompts and replies exist transiently in browser, server and Ollama memory. Keep Ollama cloud features disabled and do not enable request-body logging or add logging proxies. Claude mode sends this data to Anthropic, subject to provider policies. OS diagnostics, browser extensions and separately configured runtime logs are outside this app's control.
 - Generated text is rendered as text, never HTML. There are no external fonts, tracking scripts or remote assets.
 - The introduction and controls are English; model replies can follow the user's language. Quality varies by model/language.
-- Recent-context limits mean earlier details can be forgotten. No summarization or durable case state is implemented.
+- Bounded factual memory reduces loss when recent history is trimmed; it is not a complete incident record or durable case state. Extraction and recognition can still be wrong.
 - Full JSON replies are used rather than streaming. Slow hardware or model cold starts can hit the configurable timeout.
 - There is no authentication, public deployment hardening, multi-user rate limiting or independent verification of model safety. Never use this POC for real applications.
 - Voice input/transcription and optional browser-local spoken output are included; messaging platforms, telephone, document exports and evidence retrieval are not.

@@ -1,39 +1,33 @@
-const statuses = ['not_asked', 'answered', 'declined', 'unknown'];
-const intakeCategories = [
-  'identity_location', 'reason_for_fleeing', 'current_safety', 'available_evidence', 'assistance_needed'
-];
-const statementDetails = [
-  'keyEvents', 'approximateDates', 'locations', 'peopleInvolved', 'harmOrThreats',
-  'whyTargeted', 'fearOfReturn', 'evidenceOrWitnessDetails', 'currentProtectionConcerns'
-];
-const profileFields = [
-  'preferredName', 'legalName', 'countryOfOrigin', 'currentCountry', 'existingCase',
-  'organizationOrRepresentative', 'caseReference', 'caseStatus', 'safeContactMethod'
-];
-const answerSchema = {
-  type: 'object',
-  properties: {
-    status: { type: 'string', enum: statuses },
-    value: { anyOf: [{ type: 'string' }, { type: 'null' }] }
-  },
-  required: ['status', 'value'],
-  additionalProperties: false
-};
-const profileProperties = Object.fromEntries(profileFields.map(field => [field, answerSchema]));
-const categoryProperties = Object.fromEntries(intakeCategories.map(field => [field, { type: 'string', enum: statuses }]));
-const detailProperties = Object.fromEntries(statementDetails.map(field => [field, { type: 'string', enum: statuses }]));
-
-/** Claude constrained-output schema; semantic and cross-field checks remain in validateIntakeState. */
+import { MEMORY_FIELDS } from './memory-types';
+/** Return changes, not a second complete snapshot. The larger duplicated schema
+ * exceeded Claude's grammar compilation limit in a live development test.
+ * All fields/enums remain constrained here and validated again by the application. */
 export const CLAUDE_INTERVIEW_OUTPUT_SCHEMA = {
   type: 'object',
   properties: {
     reply: { type: 'string' },
+    updates: {
+      type: 'array', items: {
+        type: 'object',
+        properties: {
+          field: { type: 'string', enum: MEMORY_FIELDS },
+          status: { type: 'string', enum: ['answered', 'declined', 'unknown'] },
+          value: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          quote: { type: 'string' }, uncertain: { type: 'boolean' }, correction: { type: 'boolean' }
+        },
+        required: ['field', 'status', 'value', 'quote', 'uncertain', 'correction'], additionalProperties: false
+      }
+    },
+    question: { anyOf: [{ type: 'null' }, {
+      type: 'object', properties: {
+        field: { type: 'string', enum: [...MEMORY_FIELDS, 'review'] },
+        intent: { type: 'string', enum: ['ask', 'clarify', 'confirm'] },
+        candidate: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+      }, required: ['field', 'intent', 'candidate'], additionalProperties: false
+    }] },
     intake: {
       type: 'object',
       properties: {
-        profile: { type: 'object', properties: profileProperties, required: profileFields, additionalProperties: false },
-        categories: { type: 'object', properties: categoryProperties, required: intakeCategories, additionalProperties: false },
-        details: { type: 'object', properties: detailProperties, required: statementDetails, additionalProperties: false },
         urgentSafetyConcern: { type: 'boolean' },
         skipIntake: { type: 'boolean' },
         finishRequested: { type: 'boolean' },
@@ -41,12 +35,12 @@ export const CLAUDE_INTERVIEW_OUTPUT_SCHEMA = {
         summaryStatus: { type: 'string', enum: ['not_offered', 'offered', 'accepted', 'confirmed', 'declined'] }
       },
       required: [
-        'profile', 'categories', 'details', 'urgentSafetyConcern', 'skipIntake',
+        'urgentSafetyConcern', 'skipIntake',
         'finishRequested', 'pauseRequested', 'summaryStatus'
       ],
       additionalProperties: false
     }
   },
-  required: ['reply', 'intake'],
+  required: ['reply', 'intake', 'updates', 'question'],
   additionalProperties: false
 } as const;

@@ -1,5 +1,17 @@
 # Implementation verification
 
+## Conversation continuity and transcription context (2026-10-23/24)
+
+Implemented and deployed the changes described in [CONVERSATION-RELIABILITY.md](CONVERSATION-RELIABILITY.md). The final Node 22 app image passed TypeScript/Svelte checking (0 errors, 0 warnings), all **184 tests across 7 files**, and the production build. The app was rebuilt/recreated with `docker compose up -d --build --no-deps app`; Whisper and its model/configuration were preserved.
+
+A real six-turn fictional Samir sequence through the running app and configured Claude API passed: preferred name and origin survived every turn, legal name remained declined, the June-to-July 2025 correction survived later turns, and the interview reached `summary_offer`. This supersedes older entries below that say no Claude credential/live verification was available. The live check prints stage/field counts, not raw responses. It is a small nondeterministic smoke test, not an accuracy benchmark.
+
+Real generated speech also passed through `/api/transcribe` and the running Whisper service, with and without session vocabulary. Both runs recognized Samir, Sudan, and Cairo and returned separate raw text. Generated temporary WAV files were deleted by the test. This checks WAV upload, inference, hint transport, and response handling; it does not validate physical microphones, accents, noisy audio, mobile browsers, or end-to-end browser turn-taking.
+
+Live testing exposed and fixed two issues not caught by the initial mocks: Claude's grammar compiler rejected a duplicated full-state-plus-updates schema, and semantic repair after a multiple-question failure could return another unnecessary question and discard usable progress. Current model output uses strictly validated compact updates; repaired repetitive output preserves validated state and can offer summary review. Existing one-question, consent, fictional-only, and no-persistence boundaries remain.
+
+Reproduction commands: `node scripts/smoke-interview.mjs` (configured live provider), `node scripts/smoke-transcription.mjs` (macOS generated speech), `npm test`, and `npm run check`. Remaining model, bounded-memory, and voice limitations are listed in the reliability document.
+
 ## Follow-up: use native Ollama from Compose (2026-10-22)
 
 Removed the Ollama service and model volume from Compose; the app now defaults to `host.docker.internal:11434`, allowing Docker Desktop's app container to call host-installed Ollama. Restrict the explicit host allowlist to that host gateway. Containerized Ollama is no longer started by the project. Started the local server with cloud features disabled (`OLLAMA_NO_CLOUD=1`); native `ollama list` showed `qwen3:4b` (2.5 GB).

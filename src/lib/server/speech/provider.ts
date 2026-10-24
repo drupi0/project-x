@@ -1,7 +1,7 @@
 import type { Transcription } from '../../types/speech';
 
 export interface SpeechToTextProvider {
-  transcribe(input: { audio: Uint8Array; signal?: AbortSignal }): Promise<Transcription>;
+  transcribe(input: { audio: Uint8Array; signal?: AbortSignal; vocabulary?: string[] }): Promise<Transcription>;
 }
 
 export class SpeechError extends Error {

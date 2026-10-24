@@ -7,10 +7,18 @@
   import { INTAKE_CATEGORIES, INITIAL_INTAKE, PROFILE_FIELDS, STATEMENT_DETAILS, summarizeIntake, type IntakeState } from '#lib/interview/intake.ts';
   import { recentHistory, type ChatMessage } from '#lib/types/chat.ts';
   import { BrowserSpeechOutputProvider } from '#lib/speech-output/provider.ts';
+  import { EMPTY_MEMORY, validateMemory, type InterviewMemory } from '#lib/interview/memory-types.ts';
+  import { vocabularyForSession } from '#lib/interview/memory.ts';
+  import type { Transcription } from '#lib/types/speech.ts';
   let { usesClaude = false }: { usesClaude?: boolean } = $props();
 
   let messages = $state<ChatMessage[]>([]);
   let intake = $state<IntakeState>(INITIAL_INTAKE);
+  let memory = $state<InterviewMemory>(structuredClone(EMPTY_MEMORY));
+  // Original recognizer output is retained separately from edited messages and
+  // interpreted facts, for this page session only. Never log or persist it.
+  let transcripts: Transcription[] = [];
+  const vocabulary = $derived(vocabularyForSession(memory));
   let draft = $state('');
   let pending = $state(false);
   let error = $state('');
@@ -106,6 +114,8 @@
     controller?.abort();
     messages = [];
     intake = INITIAL_INTAKE;
+    memory = structuredClone(EMPTY_MEMORY);
+    transcripts = [];
     draft = '';
     pending = false;
     error = '';
@@ -130,7 +140,7 @@
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, intake }),
+        body: JSON.stringify({ messages: history, intake, memory }),
         signal: controller.signal,
         cache: 'no-store'
       });
@@ -142,8 +152,10 @@
         throw new Error('The response could not be read. Please retry.');
       }
       if (current === generation) {
+        const nextMemory = validateMemory(result.memory);
         messages = [...messages, result.message];
         intake = result.intake as IntakeState;
+        memory = nextMemory;
         if (voiceTurn) {
           onSpeaking?.();
           // A local TTS failure must not hang up the voice conversation. The
@@ -165,9 +177,10 @@
     }
   }
 
-  async function respondToVoice(text: string, onSpeaking: () => void) {
+  async function respondToVoice(text: string, onSpeaking: () => void, transcription?: Transcription) {
     // The call controller's turn-taking stays paused until AI speech ends.
     // send() starts speech after the model reply arrives.
+    if (transcription) transcripts.push(transcription);
     return send(false, text, true, onSpeaking);
   }
 
@@ -260,8 +273,8 @@
       {#if audioBusy}<span role="status">Speaking… <button type="button" onclick={stopSpeech}>Stop</button></span>{/if}
       {#if audioError}<p role="status">{audioError}</p>{/if}
     </div>
-    <VoiceCall bind:active={callActive} disabled={pending || !!error || interviewEnded} ontranscript={respondToVoice} onwelcome={() => speak(INTRODUCTION)} oninterrupt={stopSpeech} onretry={retryVoice} />
-    {#if forgotten}<p class="context-note">Only recent messages are sent to the AI. It may need you to repeat earlier details.</p>{/if}
+    <VoiceCall bind:active={callActive} {vocabulary} disabled={pending || !!error || interviewEnded} ontranscript={respondToVoice} onwelcome={() => speak(messages.at(-1)?.role === 'assistant' ? messages.at(-1)!.content : INTRODUCTION)} oninterrupt={stopSpeech} onretry={retryVoice} />
+    {#if forgotten}<p class="context-note">Recent messages and collected interview details are sent to the AI. Older wording may be outside its context.</p>{/if}
     {#if error}
       <div class="error" role="alert">
         <p>{error}</p>
@@ -270,7 +283,7 @@
       </div>
     {/if}
     {#key inputEpoch}
-      <ChatInput bind:value={draft} disabled={pending || !!error || callActive || interviewEnded} onsend={() => send()} />
+      <ChatInput bind:value={draft} {vocabulary} onrawtranscript={value => transcripts.push(value)} disabled={pending || !!error || callActive || interviewEnded} onsend={() => send()} />
     {/key}
   {/if}
 </section>

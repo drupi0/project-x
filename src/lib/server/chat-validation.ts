@@ -1,5 +1,6 @@
 import { MAX_BODY_BYTES, MAX_HISTORY_CHARACTERS, MAX_HISTORY_MESSAGES, MAX_MESSAGE_LENGTH, type ChatMessage } from '../types/chat';
 import { INITIAL_INTAKE, validateIntakeState, type IntakeState } from '../interview/intake';
+import { validateMemory, type InterviewMemory } from '../interview/memory-types';
 
 export class ValidationError extends Error {}
 
@@ -28,12 +29,19 @@ export function validateMessages(input: unknown): ChatMessage[] {
   return validated;
 }
 
-export function validateChatRequest(input: unknown): { messages: ChatMessage[]; intake: IntakeState } {
+type ChatRequestData = { messages: ChatMessage[]; intake: IntakeState; memory?: InterviewMemory };
+export function validateChatRequest(input: unknown): ChatRequestData {
   const messages = validateMessages(input);
   if (!input || typeof input !== 'object') throw new ValidationError('Provide a chat request.');
   const candidate = input as Record<string, unknown>;
-  if (candidate.intake === undefined) return { messages, intake: INITIAL_INTAKE };
-  try { return { messages, intake: validateIntakeState(candidate.intake) }; }
+  // The browser sends back the complete state previously returned by this
+  // server, including derived fields. Accept those fields but always recompute
+  // them here; never trust client-provided stage/completion decisions.
+  try { return {
+    messages,
+    intake: candidate.intake === undefined ? INITIAL_INTAKE : validateIntakeState(candidate.intake, { allowComputedFields: true }),
+    ...(candidate.memory === undefined ? {} : { memory: validateMemory(candidate.memory) })
+  }; }
   catch { throw new ValidationError('The interview state is invalid. Restart the conversation and retry.'); }
 }
 
@@ -42,7 +50,7 @@ export async function readChatRequest(request: Request): Promise<ChatMessage[]> 
   return (await readChatRequestData(request)).messages;
 }
 
-export async function readChatRequestData(request: Request): Promise<{ messages: ChatMessage[]; intake: IntakeState }> {
+export async function readChatRequestData(request: Request): Promise<ChatRequestData> {
   if (request.headers.get('content-type')?.split(';')[0].trim() !== 'application/json') {
     throw new ValidationError('Send JSON with Content-Type: application/json.');
   }

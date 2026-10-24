@@ -4,6 +4,8 @@ export interface ChatMessage {
 }
 
 export const MAX_MESSAGE_LENGTH = 4000;
+// JSON state and quoted memory are larger than the short user-facing reply.
+export const MAX_MODEL_OUTPUT_LENGTH = 24000;
 export const MAX_HISTORY_MESSAGES = 21;
 export const MAX_HISTORY_CHARACTERS = 16000;
 export const MAX_BODY_BYTES = 100000;

@@ -5,6 +5,7 @@ import { validateWav } from './validation';
 import { createSpeechProvider } from './index';
 import { WhisperProvider } from './whisper';
 import { handleTranscription } from './handler';
+import { vocabularyHeaders } from '../../speech-output/vocabulary';
 
 const audio = () => encodeWav(new Float32Array(1600).fill(0.1));
 const request = (bytes = audio(), origin = 'http://localhost') => new Request('http://localhost/api/transcribe', {
@@ -58,10 +59,34 @@ describe('audio boundary', () => {
 });
 
 describe('Whisper adapter', () => {
+  it('sends session vocabulary, clears it on the next session, and preserves raw recognition errors', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ text: ' car tom ' }));
+    const provider = new WhisperProvider({ baseUrl: 'http://localhost:8081', timeoutMs: 1000 }, fetcher);
+    const result = await provider.transcribe({ audio: audio(), vocabulary: ['Khartoum', 'مقديشو'] });
+    expect(result).toEqual({ text: 'car tom', rawText: ' car tom ' });
+    expect(result).not.toHaveProperty('confidence');
+    expect((fetcher.mock.calls[0][1]!.body as FormData).get('prompt')).toBe('Khartoum, مقديشو');
+    await provider.transcribe({ audio: audio() });
+    expect((fetcher.mock.calls[1][1]!.body as FormData).get('prompt')).toBe('');
+  });
+  it('validates vocabulary at the audio endpoint and logs counts only', async () => {
+    const transcribe = vi.fn().mockResolvedValue({ text: 'PRIVATE_TRANSCRIPT', rawText: 'PRIVATE_TRANSCRIPT' });
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const req = request();
+      for (const [key, value] of Object.entries(vocabularyHeaders(['PRIVATE_NAME', 'مقديشو']))) req.headers.set(key, value);
+      expect((await handleTranscription(req, () => ({ transcribe }), true)).status).toBe(200);
+      expect(transcribe.mock.calls[0][0].vocabulary).toEqual(['PRIVATE_NAME', 'مقديشو']);
+      expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE_');
+      const bad = request(); bad.headers.set('X-Transcription-Vocabulary', '%notjson');
+      expect((await handleTranscription(bad, () => ({ transcribe }))).status).toBe(400);
+      expect(transcribe).toHaveBeenCalledTimes(1);
+    } finally { log.mockRestore(); }
+  });
   it('sends WAV to the configured service with fixed filename and preserves the spoken language', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ text: ' Hello. ' }));
     const provider = createSpeechProvider({ WHISPER_BASE_URL: 'http://whisper:8080', STT_ALLOW_DOCKER: '1' }, fetcher);
-    expect(await provider.transcribe({ audio: audio() })).toEqual({ text: 'Hello.' });
+    expect(await provider.transcribe({ audio: audio() })).toEqual({ text: 'Hello.', rawText: ' Hello. ' });
     const [url, options] = fetcher.mock.calls[0];
     expect(String(url)).toBe('http://whisper:8080/inference');
     const form = options!.body as FormData;

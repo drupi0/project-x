@@ -4,14 +4,16 @@ import {
 } from './intake';
 import { type InterviewMemory, type InterviewQuestion, type MemoryField, type MemoryUpdate } from './memory-types';
 import type { ChatMessage } from '../types/chat';
+import { spellingCandidate, PROPER_NOUN_FIELDS } from './spelling';
 
 const normalize = (text: string) => text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
 const yes = (text: string) => /^(yes|yeah|yes that's right|that's right|correct|نعم|أيوه|ايوه)[.!،\s]*$/iu.test(text.trim());
 const noAnswer = (text: string) => /^(i don't know|i do not know|not sure|i can't remember|i cannot remember)[.!\s]*$/i.test(text.trim());
 const refusal = (text: string) => /^(skip(?: this(?: question)?)?|i(?:'d| would) rather not(?: answer)?|i (?:don't|do not) want to (?:answer|discuss (?:it|that))|prefer not to answer)[.!\s]*$/i.test(text.trim());
-const spelledValue = (text: string, value: string) => [...text.matchAll(
-  /(?<![\p{L}\p{M}])(?:\p{L}[\s,.-]+){2,}\p{L}(?![\p{L}\p{M}])/gu
-)].some(match => normalize(match[0].replace(/[\s,.-]/g, '')) === normalize(value));
+const properNoun = (field: string) => (PROPER_NOUN_FIELDS as readonly string[]).includes(field);
+const confirms = (text: string, candidate: string | null) => yes(text) || !!candidate &&
+  /^(yes|yeah|correct|نعم)[,،\s]+/iu.test(text.trim()) &&
+  normalize(text.trim().replace(/^(yes|yeah|correct|نعم)[,،\s]+/iu, '').replace(/[.!]$/, '')) === normalize(candidate);
 
 export function fieldStatus(state: IntakeState, field: MemoryField): AnswerStatus {
   if (field in state.profile) return state.profile[field as ProfileField].status;
@@ -43,6 +45,22 @@ export function reconcileTurn(
   const updates = [...(turn.updates ?? [])];
   const accepted: MemoryField[] = [];
   const ignored: MemoryField[] = [];
+  const spelling = spellingCandidate(latest);
+  const spellingField = updates.find(update => properNoun(update.field) && spelling && normalize(update.value ?? '') === normalize(spelling))?.field
+    ?? (lastQuestion && properNoun(lastQuestion.field) ? lastQuestion.field as MemoryField : undefined);
+  if (spelling && spellingField) {
+    // Override even a model update that prematurely calls spelled letters certain.
+    for (let i = updates.length - 1; i >= 0; i--) if (updates[i].field === spellingField) updates.splice(i, 1);
+    updates.push({ field: spellingField, status: 'answered', value: spelling, quote: latest.slice(0, 600),
+      uncertain: true, correction: false });
+  }
+  const confirmation = lastQuestion?.intent === 'confirm' && confirms(latest, lastQuestion.candidate);
+  const rejected = lastQuestion?.intent === 'confirm' && /^(no|nope|لا)[.!\s]*$/iu.test(latest.trim());
+  if (rejected && lastQuestion.field !== 'review') {
+    // Rejection is not affirmation and does not erase an older confirmed value.
+    for (let i = updates.length - 1; i >= 0; i--) if (updates[i].field === lastQuestion.field) updates.splice(i, 1);
+    delete nextMemory.pending[lastQuestion.field];
+  }
   // A direct request for help is itself the assistance answer, even if the model
   // filed the same sentence only under protection concerns. Retain the person's
   // exact words; do not infer what assistance they ought to want.
@@ -73,7 +91,7 @@ export function reconcileTurn(
         uncertain: false, correction: false });
     }
   }
-  if (lastQuestion && lastQuestion.field !== 'review' && (yes(latest) && lastQuestion.intent === 'confirm' || noAnswer(latest) || refusal(latest))) {
+  if (lastQuestion && lastQuestion.field !== 'review' && (confirmation || noAnswer(latest) || refusal(latest))) {
     const status = refusal(latest) ? 'declined' : noAnswer(latest) ? 'unknown' : 'answered';
     updates.push({ field: lastQuestion.field, status, value: status === 'answered' ? lastQuestion.candidate : null,
       quote: latest, uncertain: false, correction: false });
@@ -83,26 +101,33 @@ export function reconcileTurn(
     // A verbatim source span must come from THIS user turn, never assistant text.
     if (!normalize(latest).includes(normalize(update.quote))) { ignored.push(update.field); continue; }
     const confirming = lastQuestion?.field === update.field && lastQuestion.intent === 'confirm' &&
-      yes(latest) && normalize(update.value ?? '') === normalize(lastQuestion.candidate ?? '');
+      confirmation && normalize(update.value ?? '') === normalize(lastQuestion.candidate ?? '');
     const isProfile = update.field in state.profile;
-    const literalValue = update.value !== null && (normalize(latest).includes(normalize(update.value)) || spelledValue(latest, update.value));
+    const literalValue = update.value !== null && normalize(latest).includes(normalize(update.value));
+    const reconstructed = !!spelling && update.field === spellingField && normalize(update.value ?? '') === normalize(spelling);
     const semanticCase = update.field === 'existingCase' && ['yes', 'no', 'pending'].includes(update.value ?? '');
     if (update.field === 'existingCase' && update.status === 'answered' &&
         !['yes', 'no', 'pending'].includes((update.value ?? '').trim().toLowerCase())) {
       ignored.push(update.field); continue;
     }
     // A recognizer/model guess must not replace an established name/location.
-    if (isProfile && update.status === 'answered' && !literalValue && !confirming && !semanticCase) {
+    if (isProfile && update.status === 'answered' && !literalValue && !confirming && !semanticCase && !update.uncertain) {
       ignored.push(update.field); continue;
     }
     if (update.field === 'legalName' && update.status === 'answered' &&
         lastQuestion?.field !== 'legalName' && !/\b(?:legal|full) name\b/i.test(latest)) {
       ignored.push(update.field); continue;
     }
-    if (update.uncertain) {
+    if ((update.uncertain || reconstructed) && !confirming) {
       if (fieldStatus(prior, update.field) === 'declined') { ignored.push(update.field); continue; }
       // Keep the existing answer and the uncertain candidate separate.
-      nextMemory.pending[update.field] = update;
+      nextMemory.pending[update.field] = { ...update, uncertain: true };
+      // A newly reconstructed spelling is progress. Reserve one read-back turn
+      // even after two failed repetitions; identical repeated spelling cannot
+      // keep resetting the budget.
+      if (reconstructed && memory.pending[update.field]?.value !== update.value) {
+        nextMemory.clarificationAttempts[update.field] = Math.min(1, memory.clarificationAttempts[update.field] ?? 0);
+      }
       if (fieldStatus(prior, update.field) === 'not_asked') setField(state, { ...update, status: 'unknown', value: null });
       continue;
     }
@@ -121,7 +146,7 @@ export function reconcileTurn(
       nextMemory.pending[update.field] = { ...update, uncertain: true };
       continue;
     }
-    nextMemory.facts[update.field] = { ...update, confirmed: confirming || literalValue || old?.confirmed === true && old.value === update.value, previous };
+    nextMemory.facts[update.field] = { ...update, uncertain: false, confirmed: update.status === 'answered' && (confirming || literalValue || old?.confirmed === true && old.value === update.value), previous };
     delete nextMemory.pending[update.field];
     setField(state, update);
     if (update.status !== 'unknown') nextMemory.clarificationAttempts[update.field] = 0;
@@ -136,9 +161,10 @@ export function reconcileTurn(
   let reply = turn.reply;
   if (nameContext) {
     const protectedTurn = enforceNameDisclosure({ reply, intake: state }, latest);
+    const handled = protectedTurn.intake !== state;
     reply = protectedTurn.reply;
     Object.assign(state.profile, protectedTurn.intake.profile);
-    if (protectedTurn.reply !== turn.reply) {
+    if (handled) {
       for (const field of ['preferredName', 'legalName'] as const) {
         const answer = state.profile[field];
         if (answer.status === 'not_asked') continue;
@@ -146,7 +172,7 @@ export function reconcileTurn(
         const old = memory.facts[field];
         const changed = !!old?.value && old.value !== answer.value;
         nextMemory.facts[field] = { field, status: answer.status, value: answer.value, quote: latest.slice(0, 600), uncertain: false,
-          correction: changed, confirmed: field === 'preferredName',
+          correction: changed, confirmed: field === 'preferredName' && answer.status === 'answered',
           previous: changed ? [...(old?.previous ?? []), old!.value!].slice(-3) : old?.previous ?? [] };
         delete nextMemory.pending[field];
         nextMemory.clarificationAttempts[field] = 0;
@@ -187,7 +213,17 @@ export function reconcileTurn(
   let evaluated = evaluateIntake(state);
   if (nextMemory.statementStarted && evaluated.stage === 'intake') evaluated = { ...evaluated, stage: 'statement' };
   nextMemory.statementStarted ||= evaluated.stage === 'statement';
-  return { reply, intake: evaluated, memory: nextMemory, accepted, ignored };
+  let question = turn.question ?? null;
+  // A reconstructed spelling must be read back, not silently accepted. Preserve
+  // safety, pause, and completion precedence; the candidate remains pending there.
+  if (spelling && spellingField && nextMemory.pending[spellingField] &&
+      !evaluated.urgentSafetyConcern && !evaluated.pauseRequested && !evaluated.finishRequested &&
+      (nextMemory.clarificationAttempts[spellingField] ?? 0) < 2) {
+    reply = `${spelling}. Did I get that right?`;
+    question = { field: spellingField, intent: 'confirm', candidate: spelling };
+  }
+  return { reply, intake: evaluated, memory: nextMemory, accepted, ignored, question,
+    spellingDetected: !!spelling && !!spellingField };
 }
 
 export function questionBlocked(state: IntakeState, memory: InterviewMemory, question: InterviewQuestion | null): boolean {

@@ -49,8 +49,9 @@ describe('session memory transitions', () => {
   });
   it.each([['K-H-A-R-T-O-U-M', 'Khartoum'], ['A-S-M-A-R-A', 'Asmara']])('recognizes explicitly spelled vocabulary without a location dictionary: %s', (raw, value) => {
     const result = reconcileTurn(INITIAL_INTAKE, EMPTY_MEMORY, turn([update('locations', value, raw)]), input(raw));
-    expect(result.memory.facts.locations).toMatchObject({ value, confirmed: true });
-    expect(vocabularyForSession(result.memory)).toContain(value);
+    expect(result.memory.facts.locations).toBeUndefined();
+    expect(result.memory.pending.locations).toMatchObject({ value, uncertain: true });
+    expect(vocabularyForSession(result.memory)).not.toContain(value);
   });
   it('keeps car tom uncertain until yes confirms the proposed spelling', () => {
     const raw = 'It happened in car tom.';

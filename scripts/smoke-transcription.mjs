@@ -9,10 +9,12 @@ import assert from 'node:assert/strict';
 const base = new URL(process.env.TEST_APP_URL || 'http://127.0.0.1:3000');
 assert(['localhost', '127.0.0.1'].includes(base.hostname), 'Use the local fictional test app.');
 const directory = await mkdtemp(join(tmpdir(), 'fictional-whisper-test-'));
+const spelling = process.argv.includes('--spelling');
 try {
   const file = join(directory, 'generated.wav');
   execFileSync('say', ['-r', '135', '--file-format=WAVE', '--data-format=LEI16@16000', '-o', file,
-    'This is a fictional test. My name is Samir. I am from Sudan and I am staying in Cairo.']);
+    spelling ? 'My name is spelled S, A, M, I, R.'
+      : 'This is a fictional test. My name is Samir. I am from Sudan and I am staying in Cairo.']);
   const wav = await readFile(file);
   let pcm;
   for (let offset = 12; offset + 8 <= wav.length;) {
@@ -39,7 +41,8 @@ try {
     assert.equal(typeof result.rawText, 'string');
     assert(result.text.trim().length > 0);
     // Counts and match booleans only; no transcript logging or saved recordings.
-    console.log({ hints: vocabulary.length, recognizedWords: result.text.split(/\s+/).length,
+    console.log({ spelling, hints: vocabulary.length, recognizedWords: result.text.split(/\s+/).length,
+      spelledSequenceRecognized: /s[\s,.-]+a[\s,.-]+m[\s,.-]+i[\s,.-]+r/i.test(result.text),
       nameRecognized: /samir/i.test(result.text), originRecognized: /sudan/i.test(result.text), cityRecognized: /cairo/i.test(result.text) });
   }
 } finally {

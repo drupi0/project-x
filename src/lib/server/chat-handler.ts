@@ -3,7 +3,7 @@ import { AIError } from './ai/provider';
 import { readChatRequestData, ValidationError } from './chat-validation';
 import { InterviewOutputError, parseInterviewTurn } from '../interview/intake';
 import { EMPTY_MEMORY, MEMORY_FIELDS } from '../interview/memory-types';
-import { questionBlocked, reconcileTurn, rememberQuestion } from '../interview/memory';
+import { fieldStatus, questionBlocked, reconcileTurn, rememberQuestion } from '../interview/memory';
 import { promptForIntake } from '../interview/system-prompt';
 import { isAllowedRequestOrigin } from './request-origin';
 
@@ -39,7 +39,22 @@ export async function handleChat(request: Request, getProvider: () => AIProvider
       });
       const result = reconcileTurn(retained?.intake ?? intake, retained?.memory ?? memory, parsed, messages);
       retained = result;
-      const question = /[?؟？]/u.test(result.reply) ? parsed.question ?? null : null;
+      let question = /[?؟？]/u.test(result.reply) ? result.question : null;
+      const previous = memory.lastQuestion;
+      // A clarification with no new facts should not silently switch an unanswered
+      // field (e.g. event location -> current city). Keep urgent safety and voluntary
+      // pause/completion ahead of this narrow recovery, and still enforce retry limits.
+      if (question?.intent === 'clarify' && previous && previous.field !== 'review' &&
+          question.field !== previous.field && parsed.updates?.length === 0 &&
+          !result.intake.urgentSafetyConcern && !result.intake.pauseRequested && !result.intake.finishRequested &&
+          !result.intake.readyForSummary && !['answered', 'declined'].includes(
+            memory.facts[previous.field]?.status ?? fieldStatus(intake, previous.field))) {
+        result.reply = 'Sorry, I didn’t understand that clearly. Could you repeat your last answer?';
+        question = { field: previous.field, intent: 'clarify', candidate: null };
+        result.question = question;
+        if (debug) console.info('[chat]', JSON.stringify({ requestId, attempt,
+          event: 'clarification_target_preserved', field: previous.field }));
+      }
       if (questionBlocked(result.intake, result.memory, question)) {
         throw new InterviewOutputError('repeated_question', 'conversation', question?.field);
       }
@@ -103,7 +118,11 @@ export async function handleChat(request: Request, getProvider: () => AIProvider
     }
     if (debug) console.info('[chat]', JSON.stringify({ requestId, event: 'state_transition',
       from: intake.stage, to: turn.intake.stage, updatedFields: turn.accepted,
-      ignoredFields: turn.ignored, clarificationAttempts: turn.memory.clarificationAttempts }));
+      ignoredFields: turn.ignored, clarificationAttempts: turn.memory.clarificationAttempts,
+      spellingDetected: turn.spellingDetected,
+      pendingFields: Object.keys(turn.memory.pending),
+      confirmedFields: MEMORY_FIELDS.filter(field => turn.memory.facts[field]?.confirmed),
+      declinedFields: MEMORY_FIELDS.filter(field => turn.memory.facts[field]?.status === 'declined') }));
     return Response.json({
       message: { role: 'assistant', content: turn.reply },
       intake: turn.intake,

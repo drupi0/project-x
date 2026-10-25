@@ -3,6 +3,7 @@ import { handleChat } from './chat-handler';
 import { INITIAL_INTAKE } from '../interview/intake';
 import { EMPTY_MEMORY, type MemoryUpdate } from '../interview/memory-types';
 import { recentHistory, type ChatMessage } from '../types/chat';
+import { rememberQuestion } from '../interview/memory';
 
 const { stage, informationAdequate, readyForSummary, profile, categories, details, ...modelIntake } = INITIAL_INTAKE;
 const output = (reply: string, updates: MemoryUpdate[] = [], question: unknown = null, intake = modelIntake) =>
@@ -12,6 +13,65 @@ const request = (messages: ChatMessage[], intake = INITIAL_INTAKE, memory = EMPT
 const preferred: MemoryUpdate = { field: 'preferredName', status: 'answered', value: 'Samir', quote: 'My name is Samir.', uncertain: false, correction: false };
 
 describe('multi-turn chat continuity', () => {
+  it('keeps an unclear response attached to the unanswered event-location question', async () => {
+    const memory = rememberQuestion(EMPTY_MEMORY, { field: 'locations', intent: 'ask', candidate: null });
+    const chat = vi.fn().mockResolvedValue(output('Sorry, which city are you staying in?', [],
+      { field: 'currentCity', intent: 'clarify', candidate: null }));
+    const result = await (await handleChat(request([
+      { role: 'user', content: 'Fictional practice.' },
+      { role: 'assistant', content: 'Where did that happen?' },
+      { role: 'user', content: 'Blue suitcase seven sideways calendar.' }
+    ], INITIAL_INTAKE, memory), () => ({ chat }))).json();
+    expect(result.message.content).toContain('repeat your last answer');
+    expect(result.memory.lastQuestion.field).toBe('locations');
+    expect(result.memory.facts.currentCity).toBeUndefined();
+    expect(result.memory.clarificationAttempts.locations).toBe(1);
+  });
+  it('does not redirect an urgent safety clarification to the earlier historical question', async () => {
+    const memory = rememberQuestion(EMPTY_MEMORY, { field: 'locations', intent: 'ask', candidate: null });
+    const chat = vi.fn().mockResolvedValue(output('Are you safe right now?', [],
+      { field: 'current_safety', intent: 'clarify', candidate: null }, { ...modelIntake, urgentSafetyConcern: true }));
+    const result = await (await handleChat(request([{ role: 'user', content: 'Police... tomorrow... not safe here.' }],
+      INITIAL_INTAKE, memory), () => ({ chat }))).json();
+    expect(result.message.content).toBe('Are you safe right now?');
+    expect(result.memory.lastQuestion.field).toBe('current_safety');
+    expect(result.intake.urgentSafetyConcern).toBe(true);
+  });
+  it('preserves context and facts when an unintelligible answer needs repetition', async () => {
+    const initial = vi.fn().mockResolvedValue(output('Where did this happen?', [preferred], { field: 'locations', intent: 'ask', candidate: null }));
+    const first = await (await handleChat(request([{ role: 'user', content: preferred.quote }]), () => ({ chat: initial }))).json();
+    const reply = "Sorry, I didn't understand the place clearly. Could you say it again?";
+    const chat = vi.fn().mockResolvedValue(output(reply, [], { field: 'locations', intent: 'clarify', candidate: null }));
+    const garbled = 'Blue suitcase seven sideways calendar.';
+    const response = await handleChat(request([
+      { role: 'user', content: preferred.quote }, first.message, { role: 'user', content: garbled }
+    ], first.intake, first.memory), () => ({ chat }));
+    const result = await response.json();
+    expect(result.message.content).toBe(reply);
+    expect(result.memory.facts.preferredName.value).toBe('Samir');
+    expect(result.memory.facts.locations).toBeUndefined();
+    expect(result.intake.details.locations).toBe('not_asked');
+    expect(result.intake.finishRequested).toBe(false);
+    expect(result.memory.clarificationAttempts.locations).toBe(1);
+    expect(chat.mock.calls[0][0].messages.at(-1).content).toBe(garbled);
+    expect(chat.mock.calls[0][0].systemPrompt).toContain('UNCLEAR TRANSCRIPTION RECOVERY');
+  });
+  it('delivers spelling readback, retains it through repair, and confirms without asking again', async () => {
+    const memory = rememberQuestion(EMPTY_MEMORY, { field: 'preferredName', intent: 'clarify', candidate: null });
+    const chat = vi.fn().mockResolvedValueOnce(output('Where are you staying?', [], { field: 'currentCity', intent: 'ask', candidate: null }));
+    const first = await (await handleChat(request([{ role: 'user', content: 'S-A-M-I-R' }], INITIAL_INTAKE, memory), () => ({ chat }))).json();
+    expect(first.message.content).toBe('Samir. Did I get that right?');
+    expect(first.memory.lastQuestion).toEqual({ field: 'preferredName', intent: 'confirm', candidate: 'Samir' });
+    expect(first.memory.facts.preferredName).toBeUndefined();
+    chat.mockResolvedValueOnce({ role: 'assistant', content: '{malformed' })
+      .mockResolvedValueOnce(output('Where are you staying?', [], { field: 'currentCity', intent: 'ask', candidate: null }));
+    const second = await handleChat(request([{ role: 'user', content: 'Yes, Samir.' }], first.intake, first.memory), () => ({ chat }));
+    const confirmed = await second.json();
+    expect(second.status).toBe(200);
+    expect(confirmed.memory.facts.preferredName).toMatchObject({ value: 'Samir', confirmed: true });
+    expect(confirmed.memory.lastQuestion.field).toBe('currentCity');
+    expect(confirmed.message.content.match(/\?/g)).toHaveLength(1);
+  });
   it('retains facts beyond history trimming, corrects redundant questions, and survives malformed repair', async () => {
     const chat = vi.fn().mockResolvedValueOnce(output('Where are you staying?', [preferred], { field: 'currentCity', intent: 'ask', candidate: null }));
     const first = await handleChat(request([{ role: 'user', content: preferred.quote }]), () => ({ chat }));
